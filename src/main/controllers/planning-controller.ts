@@ -41,6 +41,9 @@ export class PlanningController {
     ipcMain.handle('budgets:save', (_event, input: Record<string, unknown>) =>
       this.saveBudget(input)
     );
+    ipcMain.handle('budgets:delete', (_event, id: unknown) =>
+      this.deleteBudget(id)
+    );
     ipcMain.handle('savings:save', (_event, input: Record<string, unknown>) =>
       this.saveSavingsGoal(input)
     );
@@ -60,12 +63,13 @@ export class PlanningController {
   }
 
   private saveBudget(input: Record<string, unknown>) {
+    const id = Number(input.id ?? 0);
     const category = String(input.category ?? '').trim().slice(0, 60);
     const limitCents = Number(input.limitCents);
     const month = String(input.month ?? '');
 
     if (
-      !category ||
+      !category.includes(' / ') ||
       !Number.isSafeInteger(limitCents) ||
       limitCents <= 0 ||
       !/^\d{4}-\d{2}$/.test(month)
@@ -73,13 +77,32 @@ export class PlanningController {
       throw new Error('Données de budget invalides.');
     }
 
-    db.prepare(`
-      INSERT INTO budgets (category, limit_cents, month)
-      VALUES (?, ?, ?)
-      ON CONFLICT(category, month)
-      DO UPDATE SET limit_cents = excluded.limit_cents
-    `).run(category, limitCents, month);
+    if (id) {
+      const result = db.prepare(`
+        UPDATE budgets
+        SET category = ?, limit_cents = ?, month = ?
+        WHERE id = ?
+      `).run(category, limitCents, month, id);
+      if (result.changes === 0) throw new Error('Budget introuvable.');
+    } else {
+      db.prepare(`
+        INSERT INTO budgets (category, limit_cents, month)
+        VALUES (?, ?, ?)
+        ON CONFLICT(category, month)
+        DO UPDATE SET limit_cents = excluded.limit_cents
+      `).run(category, limitCents, month);
+    }
 
+    return { ok: true };
+  }
+
+  private deleteBudget(rawId: unknown) {
+    const id = Number(rawId);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      throw new Error('Budget invalide.');
+    }
+    const result = db.prepare('DELETE FROM budgets WHERE id = ?').run(id);
+    if (result.changes === 0) throw new Error('Budget introuvable.');
     return { ok: true };
   }
 

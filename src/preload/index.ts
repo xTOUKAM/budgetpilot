@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('budgetPilot', {
   saveCategory: (input: unknown) => ipcRenderer.invoke('categories:save', input),
   archiveCategory: (id: unknown) => ipcRenderer.invoke('categories:archive', id),
   saveBudget: (input: unknown) => ipcRenderer.invoke('budgets:save', input),
+  deleteBudget: (id: unknown) => ipcRenderer.invoke('budgets:delete', id),
   saveSavingsGoal: (input: unknown) => ipcRenderer.invoke('savings:save', input),
   saveRecurring: (input: unknown) => ipcRenderer.invoke('recurring:save', input),
   toggleRecurring: (input: unknown) => ipcRenderer.invoke('recurring:toggle', input),

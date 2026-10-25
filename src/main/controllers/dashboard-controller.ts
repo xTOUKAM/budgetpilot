@@ -74,9 +74,25 @@ export class DashboardController {
 
   private getBudgets(month: string) {
     return db.prepare(`
-      SELECT id, category, limit_cents AS limitCents
+      SELECT
+        b.id, b.category, b.limit_cents AS limitCents, b.month,
+        COALESCE((
+          SELECT SUM(t.amount_cents)
+          FROM transactions t
+          WHERE t.type = 'expense'
+            AND t.transfer_group IS NULL
+            AND substr(t.date, 1, 7) = b.month
+            AND (
+              t.category = b.category
+              OR (
+                instr(b.category, ' / ') = 0
+                AND t.category LIKE b.category || ' / %'
+              )
+            )
+        ), 0) AS spentCents
       FROM budgets
-      WHERE month = ?
+      AS b
+      WHERE b.month = ?
       ORDER BY category
     `).all(month);
   }

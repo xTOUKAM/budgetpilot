@@ -1,8 +1,8 @@
 {
-  "name": "budgetpilot",
+  "name": "warble",
   "version": "0.1.0",
   "private": true,
-  "description": "Application locale de gestion financière personnelle",
+  "description": "Warble, application locale de gestion financière personnelle",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -36,8 +36,8 @@
     "@types/node": "^22.13.4"
   },
   "build": {
-    "appId": "fr.budgetpilot.desktop",
-    "productName": "BudgetPilot",
+    "appId": "fr.warble.desktop",
+    "productName": "Warble",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -51,7 +51,7 @@
       "target": [
         "nsis"
       ],
-      "artifactName": "BudgetPilot-Setup-${version}.${ext}",
+      "artifactName": "Warble-Setup-${version}.${ext}",
       "signAndEditExecutable": false,
       "icon": "build/icon.ico"
     },

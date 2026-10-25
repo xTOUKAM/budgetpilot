@@ -17,7 +17,7 @@ export class DataController {
   private async createBackup() {
     const result = await dialog.showSaveDialog({
       title: 'Sauvegarder les données',
-      defaultPath: join(app.getPath('documents'), `budgetpilot-${today()}.sqlite`),
+      defaultPath: join(app.getPath('documents'), `warble-${today()}.sqlite`),
       filters: [{ name: 'Base SQLite', extensions: ['sqlite'] }]
     });
 

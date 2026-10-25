@@ -1,4 +1,4 @@
-# BudgetPilot — starter Windows
+# Warble — application Windows
 
 Application locale de finances personnelles avec Electron, React, TypeScript et SQLite.
 
@@ -56,11 +56,12 @@ La génération utilise l'icône Windows dédiée `build/icon.ico`. La signature
 appliquée par `electron-builder` à l'installateur et aux exécutables Windows.
 
 ## Stockage des données
-La base SQLite est créée automatiquement dans le dossier de données utilisateur d'Electron, sous `data/budgetpilot.sqlite`. Ce chemin est propre à l'application et à l'utilisateur Windows. Fermez l'application avant de copier la base pour une sauvegarde manuelle.
+La base SQLite est créée automatiquement dans le dossier de données utilisateur d'Electron, sous `data/budgetpilot.sqlite`. Lors de la mise à jour vers Warble, l'application recherche automatiquement l'ancien dossier utilisateur `BudgetPilot` ou `budgetpilot` et recopie la base ainsi que ses fichiers SQLite associés avant de l'ouvrir. Les données existantes sont donc conservées et l'ancien dossier n'est pas supprimé. Fermez l'application avant de copier la base pour une sauvegarde manuelle.
 
 ## Fonctionnalités incluses dans ce starter
 - Comptes multiples et soldes initiaux
 - Ajout de revenus et dépenses
+- Sous-catégories pour détailler les dépenses (essence, contrôle technique, garage, etc.)
 - Tableau de bord mensuel
 - Répartition des dépenses par catégorie
 - Budgets mensuels par catégorie
@@ -71,6 +72,7 @@ La base SQLite est créée automatiquement dans le dossier de données utilisate
 - Édition/suppression et annulation sécurisée des transactions (avec recalcul des soldes)
 - Gestion complète des opérations récurrentes et génération mensuelle sans doublons
 - Prévision de fin de mois
+- Statistiques détaillées par mois, catégorie, sous-catégorie et compte
 - Transferts entre comptes, sans les compter comme revenus/dépenses
 - Sauvegarde/restauration intégrée et tests automatisés
 - Tests de bout en bout sur Windows et signature de l'application si elle est distribuée

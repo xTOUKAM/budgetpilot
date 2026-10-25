@@ -72,9 +72,24 @@ export class AnalyticsController {
     const to = String(input.to ?? '9999-12-31');
 
     return {
+      summary: this.getSummary(from, to),
       byMonth: this.getMonthlyStatistics(from, to),
-      byCategory: this.getCategoryStatistics(from, to)
+      byCategory: this.getCategoryStatistics(from, to),
+      bySubcategory: this.getSubcategoryStatistics(from, to),
+      byAccount: this.getAccountStatistics(from, to)
     };
+  }
+
+  private getSummary(from: string, to: string) {
+    return db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN type = 'income' AND transfer_group IS NULL THEN amount_cents ELSE 0 END), 0) AS income,
+        COALESCE(SUM(CASE WHEN type = 'expense' AND transfer_group IS NULL THEN amount_cents ELSE 0 END), 0) AS expenses,
+        COUNT(CASE WHEN transfer_group IS NULL THEN 1 END) AS operations,
+        COALESCE(AVG(CASE WHEN type = 'expense' AND transfer_group IS NULL THEN amount_cents END), 0) AS averageExpense
+      FROM transactions
+      WHERE date BETWEEN ? AND ?
+    `).get(from, to);
   }
 
   private getForecast(input: Record<string, unknown>) {
@@ -133,14 +148,42 @@ export class AnalyticsController {
   }
 
   private getCategoryStatistics(from: string, to: string) {
+    const rows = db.prepare(`
+      SELECT category, SUM(amount_cents) AS amountCents
+      FROM transactions
+      WHERE type = 'expense' AND transfer_group IS NULL AND date BETWEEN ? AND ?
+      GROUP BY category
+    `).all(from, to) as Array<{ category: string; amountCents: number }>;
+    const totals = new Map<string, number>();
+    for (const row of rows) {
+      const parent = row.category.split(' / ')[0];
+      totals.set(parent, (totals.get(parent) ?? 0) + row.amountCents);
+    }
+    return [...totals.entries()]
+      .map(([category, amountCents]) => ({ category, amountCents }))
+      .sort((a, b) => b.amountCents - a.amountCents);
+  }
+
+  private getSubcategoryStatistics(from: string, to: string) {
     return db.prepare(`
       SELECT category, SUM(amount_cents) AS amountCents
       FROM transactions
-      WHERE type = 'expense'
-        AND transfer_group IS NULL
-        AND date BETWEEN ? AND ?
+      WHERE type = 'expense' AND transfer_group IS NULL AND date BETWEEN ? AND ?
       GROUP BY category
       ORDER BY amountCents DESC
+    `).all(from, to);
+  }
+
+  private getAccountStatistics(from: string, to: string) {
+    return db.prepare(`
+      SELECT a.name AS accountName,
+        COALESCE(SUM(CASE WHEN t.type = 'income' THEN t.amount_cents ELSE 0 END), 0) AS income,
+        COALESCE(SUM(CASE WHEN t.type = 'expense' THEN t.amount_cents ELSE 0 END), 0) AS expenses
+      FROM transactions t
+      JOIN accounts a ON a.id = t.account_id
+      WHERE t.transfer_group IS NULL AND t.date BETWEEN ? AND ?
+      GROUP BY a.id, a.name
+      ORDER BY expenses DESC
     `).all(from, to);
   }
 

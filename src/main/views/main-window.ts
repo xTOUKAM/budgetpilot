@@ -7,7 +7,7 @@ export function createMainWindow() {
     height: 920,
     minWidth: 1050,
     minHeight: 700,
-    title: 'BudgetPilot',
+    title: 'Warble',
     backgroundColor: '#0b1020',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
