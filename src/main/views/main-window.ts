@@ -1,5 +1,5 @@
-import { BrowserWindow } from 'electron';
-import { join } from 'path';
+import { app, BrowserWindow } from 'electron';
+import { join } from 'node:path';
 
 export function createMainWindow() {
   const window = new BrowserWindow({
@@ -8,6 +8,9 @@ export function createMainWindow() {
     minWidth: 1050,
     minHeight: 700,
     title: 'Warble',
+    icon: app.isPackaged
+      ? join(process.resourcesPath, 'icon.ico')
+      : join(__dirname, '../../build/icon.ico'),
     backgroundColor: '#0b1020',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('budgetPilot', {
   updateTransaction: (input: unknown) => ipcRenderer.invoke('transactions:update', input),
   deleteTransaction: (id: unknown) => ipcRenderer.invoke('transactions:delete', id),
   createTransfer: (input: unknown) => ipcRenderer.invoke('transfers:create', input),
+  updateTransfer: (input: unknown) => ipcRenderer.invoke('transfers:update', input),
   saveCategory: (input: unknown) => ipcRenderer.invoke('categories:save', input),
   archiveCategory: (id: unknown) => ipcRenderer.invoke('categories:archive', id),
   saveBudget: (input: unknown) => ipcRenderer.invoke('budgets:save', input),
@@ -20,7 +21,14 @@ contextBridge.exposeInMainWorld('budgetPilot', {
   searchHistory: (input: unknown) => ipcRenderer.invoke('history:search', input),
   getStatistics: (input: unknown) => ipcRenderer.invoke('statistics:get', input),
   getForecast: (input: unknown) => ipcRenderer.invoke('forecast:get', input),
-  backup: () => ipcRenderer.invoke('data:backup'),
-  restore: () => ipcRenderer.invoke('data:restore'),
-  exportCsv: () => ipcRenderer.invoke('data:export')
+  backup: (input: unknown) => ipcRenderer.invoke('data:backup', input),
+  restore: (input: unknown) => ipcRenderer.invoke('data:restore', input),
+  exportCsv: (input: unknown) => ipcRenderer.invoke('data:export', input),
+  importCsv: (input: unknown) => ipcRenderer.invoke('data:import-csv', input),
+  getAutoBackupStatus: () => ipcRenderer.invoke('data:auto-backup-status'),
+  setAutoBackup: (input: unknown) => ipcRenderer.invoke('data:auto-backup-toggle', input),
+  getSecurityStatus: () => ipcRenderer.invoke('security:status'),
+  setPin: (input: unknown) => ipcRenderer.invoke('security:set-pin', input),
+  verifyPin: (input: unknown) => ipcRenderer.invoke('security:verify-pin', input),
+  removePin: (input: unknown) => ipcRenderer.invoke('security:remove-pin', input)
 });

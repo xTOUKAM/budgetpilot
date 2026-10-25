@@ -52,6 +52,7 @@ export class DashboardController {
       SELECT
         t.id, t.account_id AS accountId, t.date, t.type,
         t.amount_cents AS amountCents, t.category, t.note,
+        t.transfer_group AS transferGroup,
         a.name AS accountName
       FROM transactions t
       JOIN accounts a ON a.id = t.account_id
@@ -98,11 +99,31 @@ export class DashboardController {
   }
 
   private getSavingsGoals() {
-    return db.prepare(`
-      SELECT id, name, target_cents AS targetCents, saved_cents AS savedCents
-      FROM savings_goals
-      ORDER BY name
-    `).all();
+    const goals = db.prepare(`
+      SELECT g.id, g.name, g.target_cents AS targetCents, g.saved_cents AS savedCents,
+        g.target_date AS targetDate, g.monthly_cents AS monthlyCents,
+        g.account_id AS accountId, a.name AS accountName
+      FROM savings_goals g
+      LEFT JOIN accounts a ON a.id = g.account_id
+      ORDER BY g.name
+    `).all() as Array<{
+      id: number; name: string; targetCents: number; savedCents: number;
+      targetDate: string | null; monthlyCents: number | null;
+      accountId: number | null; accountName: string | null;
+    }>;
+    return goals.map(goal => ({
+      ...goal,
+      monthlyCents: goal.monthlyCents ?? 0,
+      remainingCents: Math.max(0, goal.targetCents - goal.savedCents),
+      monthsRemaining: goal.targetDate ? this.monthsUntil(goal.targetDate) : null
+    }));
+  }
+
+  private monthsUntil(targetDate: string): number {
+    const now = new Date();
+    const target = new Date(`${targetDate}T12:00:00Z`);
+    return Math.max(0, (target.getUTCFullYear() - now.getUTCFullYear()) * 12
+      + target.getUTCMonth() - now.getUTCMonth());
   }
 
   private getCategories() {
@@ -118,7 +139,7 @@ export class DashboardController {
     return db.prepare(`
       SELECT
         id, label, type, amount_cents AS amountCents, category,
-        frequency, next_date AS nextDate, active
+        frequency, next_date AS nextDate, end_date AS endDate, active
       FROM recurring_transactions
       ORDER BY next_date
     `).all();

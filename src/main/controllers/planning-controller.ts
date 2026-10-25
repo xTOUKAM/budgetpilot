@@ -107,24 +107,45 @@ export class PlanningController {
   }
 
   private saveSavingsGoal(input: Record<string, unknown>) {
+    const id = Number(input.id ?? 0);
     const name = String(input.name ?? '').trim().slice(0, 80);
     const targetCents = Number(input.targetCents);
     const savedCents = Number(input.savedCents);
+    const monthlyCents = Number(input.monthlyCents ?? 0);
+    const targetDate = input.targetDate ? String(input.targetDate) : null;
+    const accountId = Number(input.accountId ?? 0) || null;
 
     if (
       !name ||
       !Number.isSafeInteger(targetCents) ||
       targetCents <= 0 ||
       !Number.isSafeInteger(savedCents) ||
-      savedCents < 0
+      savedCents < 0 ||
+      !Number.isSafeInteger(monthlyCents) ||
+      monthlyCents < 0 ||
+      (targetDate !== null && !isValidDate(targetDate))
     ) {
       throw new Error("Données d'objectif invalides.");
     }
 
-    db.prepare(`
-      INSERT INTO savings_goals (name, target_cents, saved_cents)
-      VALUES (?, ?, ?)
-    `).run(name, targetCents, savedCents);
+    if (accountId !== null && !db.prepare('SELECT id FROM accounts WHERE id = ? AND archived = 0').get(accountId)) {
+      throw new Error('Compte d’épargne introuvable.');
+    }
+    if (id) {
+      const result = db.prepare(`
+        UPDATE savings_goals
+        SET name = ?, target_cents = ?, saved_cents = ?, target_date = ?,
+            monthly_cents = ?, account_id = ?
+        WHERE id = ?
+      `).run(name, targetCents, savedCents, targetDate, monthlyCents || null, accountId, id);
+      if (!result.changes) throw new Error('Objectif introuvable.');
+    } else {
+      db.prepare(`
+        INSERT INTO savings_goals
+          (name, target_cents, saved_cents, target_date, monthly_cents, account_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(name, targetCents, savedCents, targetDate, monthlyCents || null, accountId);
+    }
 
     return { ok: true };
   }
@@ -187,14 +208,23 @@ export class PlanningController {
   private runDueRecurring() {
     const run = db.transaction(() => {
       const dueRows = this.findDueRecurring();
-      const created = dueRows.reduce(
-        (total, row) => total + this.processDueRecurring(row),
-        0
+      return dueRows.reduce(
+        (total, row) => {
+          const result = this.processDueRecurring(row);
+          return {
+            created: total.created + result.created,
+            skipped: total.skipped + result.skipped
+          };
+        },
+        { created: 0, skipped: 0 }
       );
-      return created;
     });
 
-    return { created: run() };
+    return run();
+  }
+
+  async runDueRecurringOnStartup(): Promise<void> {
+    this.runDueRecurring();
   }
 
   private parseRecurring(input: Record<string, unknown>): RecurringInput {
@@ -227,7 +257,7 @@ export class PlanningController {
       !isOneOf(frequency, RECURRENCE_FREQUENCIES) ||
       !isValidDate(recurring.startDate) ||
       !isValidDate(recurring.nextDate) ||
-      (recurring.endDate !== null && !isValidDate(recurring.endDate))
+      (recurring.endDate !== null && (!isValidDate(recurring.endDate) || recurring.endDate < recurring.nextDate))
     ) {
       throw new Error('Données de récurrence invalides.');
     }
@@ -287,24 +317,30 @@ export class PlanningController {
     `).all(today()) as DueRecurringRow[];
   }
 
-  private processDueRecurring(row: DueRecurringRow): number {
+  private processDueRecurring(row: DueRecurringRow): { created: number; skipped: number } {
     let dueDate = row.next_date;
     let created = 0;
+    let skipped = 0;
 
     while (this.isDueDateValid(dueDate, row.end_date)) {
       if (dueDate > today()) {
         break;
       }
       if (!this.occurrenceExists(row.id, dueDate)) {
-        this.createRecurringTransaction(row, dueDate);
-        created += 1;
+        if (row.type === 'expense' && !this.hasSufficientBalance(row.account_id, row.amount_cents)) {
+          this.recordSkippedOccurrence(row.id, dueDate);
+          skipped += 1;
+        } else {
+          this.createRecurringTransaction(row, dueDate);
+          created += 1;
+        }
       }
       dueDate = shiftDate(dueDate, row.frequency);
     }
 
     db.prepare('UPDATE recurring_transactions SET next_date = ? WHERE id = ?')
       .run(dueDate, row.id);
-    return created;
+    return { created, skipped };
   }
 
   private occurrenceExists(recurringId: number, dueDate: string): boolean {
@@ -314,7 +350,26 @@ export class PlanningController {
         FROM recurrence_occurrences
         WHERE recurring_id = ? AND due_date = ?
       `).get(recurringId, dueDate)
+    ) || Boolean(
+      db.prepare(`
+        SELECT 1
+        FROM recurrence_skips
+        WHERE recurring_id = ? AND due_date = ?
+      `).get(recurringId, dueDate)
     );
+  }
+
+  private hasSufficientBalance(accountId: number, amountCents: number): boolean {
+    const account = db.prepare('SELECT balance_cents FROM accounts WHERE id = ? AND archived = 0').get(accountId) as { balance_cents: number } | undefined;
+    if (!account) throw new Error('Compte de la récurrence introuvable ou archivé.');
+    return account.balance_cents >= amountCents;
+  }
+
+  private recordSkippedOccurrence(recurringId: number, dueDate: string): void {
+    db.prepare(`
+      INSERT INTO recurrence_skips (recurring_id, due_date, reason)
+      VALUES (?, ?, ?)
+    `).run(recurringId, dueDate, 'Solde insuffisant');
   }
 
   private createRecurringTransaction(row: DueRecurringRow, dueDate: string): void {

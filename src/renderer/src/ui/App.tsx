@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, ArrowDownLeft, ArrowUpRight, Banknote, ChartNoAxesCombined, Download, LayoutDashboard, Pencil, Plus, Search, Settings, Target, Trash2, Repeat, Wallet } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import logoUrl from '../../../img/logo_blanc.svg';
@@ -33,33 +33,90 @@ export default function App() {
   const [editingBudget, setEditingBudget] = useState<DashboardData['budgets'][number] | null>(null);
   const [showGoal, setShowGoal] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<DashboardData['transactions'][number] | null>(null);
+  const [editingTransfer, setEditingTransfer] = useState<DashboardData['transactions'][number] | null>(null);
   const [showTransfer, setShowTransfer] = useState(false);
   const [history, setHistory] = useState<DashboardData['transactions']>([]);
   const [historySearch, setHistorySearch] = useState('');
+  const [historyFilters, setHistoryFilters] = useState<HistoryFilters>({ search: '', from: '0000-01-01', to: '9999-12-31', type: '', accountId: 0, category: '', minAmount: 0, maxAmount: 0, sort: 'date' });
   const [statistics, setStatistics] = useState<StatisticsData | null>(null);
   const [forecast, setForecast] = useState<{ days: number; points: Array<{ date: string; balanceCents: number }>; assumptions: string[] } | null>(null);
+  const [pinConfigured, setPinConfigured] = useState(false);
+  const [locked, setLocked] = useState(false);
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => (localStorage.getItem('warble-theme') as 'dark' | 'light') ?? 'dark');
 
   async function refresh() {
     try { setData(await window.budgetPilot.getDashboard()); setError(''); }
     catch (e) { setError(e instanceof Error ? e.message : 'Erreur de chargement'); }
   }
   async function reloadHistory() {
-    try { setHistory(await window.budgetPilot.searchHistory({ search: historySearch })); }
+    try { setHistory(await window.budgetPilot.searchHistory({ ...historyFilters, search: historySearch })); }
     catch (e) { setError(e instanceof Error ? e.message : 'Recherche impossible'); }
   }
   useEffect(() => { void refresh(); }, []);
   useEffect(() => {
+    void window.budgetPilot.getSecurityStatus().then(status => {
+      setPinConfigured(status.configured);
+      setLocked(status.configured);
+    }).catch(e => setError(e instanceof Error ? e.message : 'Sécurité indisponible'));
+  }, []);
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('warble-theme', theme);
+  }, [theme]);
+  useEffect(() => {
+    const onShortcut = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTyping = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.tagName === 'SELECT' || target?.isContentEditable;
+      if (event.key === 'Escape') {
+        if (showTransaction) setShowTransaction(false);
+        else if (showTransfer) setShowTransfer(false);
+        else if (showAccount) setShowAccount(false);
+        else if (showBudget) setShowBudget(false);
+        else if (showGoal) setShowGoal(false);
+        else if (editingTransaction) setEditingTransaction(null);
+        else if (editingTransfer) setEditingTransfer(null);
+        else if (editingBudget) setEditingBudget(null);
+        return;
+      }
+      if (isTyping || !event.ctrlKey || event.altKey || event.shiftKey) return;
+      if (event.key.toLowerCase() === 'n') {
+        event.preventDefault();
+        setShowTransaction(true);
+      } else if (event.key.toLowerCase() === 't') {
+        event.preventDefault();
+        setShowTransfer(true);
+      }
+    };
+    document.addEventListener('keydown', onShortcut);
+    return () => document.removeEventListener('keydown', onShortcut);
+  }, [editingBudget, editingTransaction, editingTransfer, showAccount, showBudget, showGoal, showTransaction, showTransfer]);
+  useEffect(() => {
+    if (!pinConfigured || locked) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const reset = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => setLocked(true), 5 * 60 * 1000);
+    };
+    const events = ['mousedown', 'keydown', 'mousemove', 'touchstart'];
+    events.forEach(event => window.addEventListener(event, reset));
+    reset();
+    return () => {
+      clearTimeout(timer);
+      events.forEach(event => window.removeEventListener(event, reset));
+    };
+  }, [pinConfigured, locked]);
+  useEffect(() => {
     if (page === 'history') void reloadHistory();
     if (page === 'statistics') void window.budgetPilot.getStatistics({ from: '0000-01-01', to: '9999-12-31' }).then(setStatistics).catch(e => setError(e instanceof Error ? e.message : 'Statistiques indisponibles'));
     if (page === 'statistics') void window.budgetPilot.getForecast({ days: 30 }).then(setForecast).catch(e => setError(e instanceof Error ? e.message : 'Prévision indisponible'));
-  }, [page, historySearch]);
+  }, [page, historySearch, historyFilters]);
 
   const balance = useMemo(() => data?.accounts.reduce((sum, a) => sum + a.balanceCents, 0) ?? 0, [data]);
   const spentByCategory = data?.categoryTotals ?? [];
 
   async function exportCsv() {
     try {
-      const csv = await window.budgetPilot.exportCsv();
+      const csv = await window.budgetPilot.exportCsv({ ...historyFilters, search: historySearch });
       const blob = new Blob(['\ufeff', csv], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -81,13 +138,14 @@ export default function App() {
         <button className={page === 'history' ? 'nav-item active' : 'nav-item'} onClick={() => setPage('history')}><Search size={18}/>Historique</button>
         <button className={page === 'statistics' ? 'nav-item active' : 'nav-item'} onClick={() => setPage('statistics')}><ChartNoAxesCombined size={18}/>Statistiques</button>
         <button className={page === 'settings' ? 'nav-item active' : 'nav-item'} onClick={() => setPage('settings')}><Settings size={18}/>Paramètres</button>
+        <button className={page === 'about' ? 'nav-item active' : 'nav-item'} onClick={() => setPage('about')}><Activity size={18}/>À propos</button>
       </nav>
-      <div className="sidebar-bottom"><div className="local-badge"><span/>Données stockées localement</div><small>Warble · Version 0.1.0</small></div>
+      <div className="sidebar-bottom"><div className="local-badge"><span/>Données stockées localement</div><small>Warble · Version 0.1.1</small></div>
     </aside>
 
     <main className="main">
-      <header className="topbar"><div><span className="eyebrow">VOTRE ARGENT, EN UN COUP D'ŒIL</span><h1>{{dashboard:'Vue d’ensemble',accounts:'Mes comptes',budgets:'Budgets mensuels',savings:'Objectifs d’épargne',recurring:'Récurrences',history:'Historique',statistics:'Statistiques',settings:'Paramètres'}[page] ?? 'Warble'}</h1></div><div className="top-actions"><span className="date-chip">{new Intl.DateTimeFormat('fr-FR', { month: 'long', year: 'numeric' }).format(new Date())}</span><button className="secondary-btn" onClick={() => setShowTransfer(true)}>Transférer</button><button className="primary-btn" onClick={() => setShowTransaction(true)}><Plus size={17}/> Ajouter une opération</button></div></header>
-      {error && <div className="error-banner">{error}</div>}
+      <header className="topbar"><div><span className="eyebrow">VOTRE ARGENT, EN UN COUP D'ŒIL</span><h1>{{dashboard:'Vue d’ensemble',accounts:'Mes comptes',budgets:'Budgets mensuels',savings:'Objectifs d’épargne',recurring:'Récurrences',history:'Historique',statistics:'Statistiques',settings:'Paramètres',about:'À propos'}[page] ?? 'Warble'}</h1></div><div className="top-actions"><span className="date-chip">{new Intl.DateTimeFormat('fr-FR', { month: 'long', year: 'numeric' }).format(new Date())}</span><button className="secondary-btn" title="Nouveau transfert (Ctrl+T)" onClick={() => setShowTransfer(true)}>Transférer</button><button className="primary-btn" title="Nouvelle opération (Ctrl+N)" onClick={() => setShowTransaction(true)}><Plus size={17}/> Ajouter une opération</button></div></header>
+      {error && <div className="error-banner" role="alert"><span className="error-banner-icon" aria-hidden="true">!</span><span className="error-banner-message">{error}</span><button type="button" className="error-banner-close" aria-label="Fermer le message d’erreur" onClick={() => setError('')}>×</button></div>}
       {!data ? <div className="loading">Chargement de vos finances…</div> : <>
         {page === 'dashboard' && <>
           <section className="hero-card"><div className="hero-copy"><span className="muted-label">SOLDE TOTAL DE VOS COMPTES</span><div className="hero-balance">{euro(balance)}</div><div className="hero-foot"><span className="hero-dot"/> Solde calculé à partir des opérations enregistrées</div></div></section>
@@ -100,32 +158,35 @@ export default function App() {
             <div className="panel"><div className="panel-heading"><div><h2>Dépenses par catégorie</h2><p>Répartition sur le mois en cours</p></div><span className="panel-icon"><ChartNoAxesCombined size={18}/></span></div>
               {spentByCategory.length ? <div className="chart-layout"><div className="donut"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={spentByCategory} dataKey="amountCents" nameKey="category" innerRadius={58} outerRadius={82} paddingAngle={4}>{spentByCategory.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]}/>)}</Pie><Tooltip formatter={(v) => euro(Number(v))}/></PieChart></ResponsiveContainer></div><div className="legend">{spentByCategory.slice(0, 6).map((item, i) => <div className="legend-row" key={item.category}><span className="legend-dot" style={{ background: COLORS[i % COLORS.length] }}/><span>{item.category}</span><strong>{euro(item.amountCents)}</strong></div>)}</div></div> : <Empty text="Ajoutez des dépenses pour voir apparaître vos catégories."/>}
             </div>
-            <div className="panel"><div className="panel-heading"><div><h2>Mes comptes</h2><p>Votre argent, réparti par compte</p></div><button className="icon-btn" title="Ajouter un compte" onClick={() => setShowAccount(true)}><Plus size={18}/></button></div>
+            <div className="panel"><div className="panel-heading"><div><h2>Mes comptes</h2><p>Votre argent, réparti par compte</p></div>            <button className="icon-btn" title="Ajouter un compte" aria-label="Ajouter un compte" onClick={() => setShowAccount(true)}><Plus size={18}/></button></div>
               <div className="account-list">{data.accounts.map((account, i) => <div className="account-row" key={account.id}><div className={`account-symbol symbol-${i % 4}`}><Wallet size={18}/></div><div className="account-name"><strong>{account.name}</strong><small>{({bank:'Compte bancaire',cash:'Espèces',savings:'Épargne',other:'Autre'})[account.type] ?? account.type}</small></div><strong className="account-amount">{euro(account.balanceCents)}</strong></div>)}</div><button className="text-btn" onClick={() => setPage('accounts')}>Gérer mes comptes <span>→</span></button>
             </div>
           </section>
           <section className="panel transactions-panel"><div className="panel-heading"><div><h2>Dernières opérations</h2><p>Vos transactions les plus récentes</p></div><button className="text-btn" onClick={exportCsv}><Download size={15}/> Exporter CSV</button></div>
-            {data.transactions.length ? <div className="table-wrap"><table><thead><tr><th>OPÉRATION</th><th>CATÉGORIE</th><th>COMPTE</th><th>DATE</th><th className="align-right">MONTANT</th><th></th></tr></thead><tbody>{data.transactions.map(t => <tr key={t.id}><td><div className="transaction-title"><span className={t.type === 'income' ? 'transaction-icon income' : 'transaction-icon expense'}>{t.type === 'income' ? <ArrowDownLeft size={16}/> : <ArrowUpRight size={16}/>}</span><div><strong>{t.note || t.category}</strong><small>{t.type === 'income' ? 'Revenu' : 'Dépense'}</small></div></div></td><td><span className="category-pill">{t.category}</span></td><td>{t.accountName}</td><td>{new Date(t.date + 'T12:00:00').toLocaleDateString('fr-FR')}</td><td className={`align-right amount ${t.type === 'income' ? 'positive' : 'negative'}`}>{t.type === 'income' ? '+' : '−'}{euro(t.amountCents)}</td><td><button className="table-action" title="Modifier" onClick={() => setEditingTransaction(t)}><Pencil size={14}/></button><button className="table-action danger" title="Supprimer" onClick={async () => { if (!window.confirm('Supprimer cette opération ?')) return; try { await window.budgetPilot.deleteTransaction(t.id); await refresh(); } catch (e) { setError(e instanceof Error ? e.message : 'Suppression impossible'); } }}><Trash2 size={14}/></button></td></tr>)}</tbody></table></div> : <Empty text="Aucune opération pour le moment. Ajoutez votre première transaction."/>}
+            {data.transactions.length ? <div className="table-wrap"><table><thead><tr><th>OPÉRATION</th><th>CATÉGORIE</th><th>COMPTE</th><th>DATE</th><th className="align-right">MONTANT</th><th></th></tr></thead><tbody>{data.transactions.map(t => <tr key={t.id}><td><div className="transaction-title"><span className={t.type === 'income' ? 'transaction-icon income' : 'transaction-icon expense'}>{t.type === 'income' ? <ArrowDownLeft size={16}/> : <ArrowUpRight size={16}/>}</span><div><strong>{t.note || t.category}</strong><small>{t.type === 'income' ? 'Revenu' : 'Dépense'}</small></div></div></td><td><span className="category-pill">{t.category}</span></td><td>{t.accountName}</td><td>{new Date(t.date + 'T12:00:00').toLocaleDateString('fr-FR')}</td><td className={`align-right amount ${t.type === 'income' ? 'positive' : 'negative'}`}>{t.type === 'income' ? '+' : '−'}{euro(t.amountCents)}</td><td>            <button className="table-action" title="Modifier" aria-label={`Modifier ${t.note || t.category}`} onClick={() => setEditingTransaction(t)}><Pencil size={14}/></button><button className="table-action danger" title="Supprimer" aria-label={`Supprimer ${t.note || t.category}`} onClick={async () => { if (!window.confirm('Supprimer cette opération ?')) return; try { await window.budgetPilot.deleteTransaction(t.id); await refresh(); } catch (e) { setError(e instanceof Error ? e.message : 'Suppression impossible'); } }}><Trash2 size={14}/></button></td></tr>)}</tbody></table></div> : <Empty text="Aucune opération pour le moment. Ajoutez votre première transaction."/>}
           </section>
         </>}
         {page === 'accounts' && <section className="panel page-panel"><div className="panel-heading"><div><h2>Tous vos comptes</h2><p>Le solde évolue automatiquement avec les opérations.</p></div><button className="primary-btn" onClick={() => setShowAccount(true)}><Plus size={16}/> Ajouter un compte</button></div><div className="account-cards">{data.accounts.map((a, i) => <div className="account-card" key={a.id}><div className={`account-symbol symbol-${i % 4}`}><Wallet size={20}/></div><span className="muted-label">{({bank:'COMPTE BANCAIRE',cash:'ESPÈCES',savings:'ÉPARGNE',other:'AUTRE'})[a.type] ?? a.type}</span><h3>{a.name}</h3><div className="account-amount large">{euro(a.balanceCents)}</div><button className="text-btn" onClick={async()=>{ if (!window.confirm(`Archiver « ${a.name} » ?`)) return; await window.budgetPilot.archiveAccount(a.id); await refresh(); }}>Archiver le compte</button></div>)}</div></section>}
         {page === 'budgets' && <section className="panel page-panel"><div className="panel-heading"><div><h2>Budgets du mois</h2><p>Le plafond d'une catégorie est calculé à partir de ses sous-catégories.</p></div><button className="primary-btn" onClick={() => setShowBudget(true)}><Plus size={16}/> Définir un budget</button></div>{data.budgets.length ? <BudgetGroups budgets={data.budgets} onEdit={setEditingBudget} onDelete={async budget => { if (!window.confirm(`Supprimer le budget « ${budget.category} » ?`)) return; try { await window.budgetPilot.deleteBudget(budget.id); await refresh(); } catch (e) { setError(e instanceof Error ? e.message : 'Suppression impossible'); } }} /> : <Empty text="Aucun budget défini pour ce mois. Créez un budget par sous-catégorie."/>}</section>}
-        {page === 'savings' && <section className="panel page-panel"><div className="panel-heading"><div><h2>Vos objectifs</h2><p>Gardez le cap sur vos projets.</p></div><button className="primary-btn" onClick={() => setShowGoal(true)}><Plus size={16}/> Nouvel objectif</button></div>{data.goals.length ? <div className="goal-grid">{data.goals.map(g => { const pct = Math.min(100, Math.round(g.savedCents / g.targetCents * 100)); return <div className="goal-card" key={g.id}><div className="goal-icon"><Target size={21}/></div><h3>{g.name}</h3><div className="goal-amount">{euro(g.savedCents)} <span>sur {euro(g.targetCents)}</span></div><div className="progress"><span style={{width:`${pct}%`}}/></div><small>{pct}% atteint</small></div>; })}</div> : <Empty text="Créez un objectif pour suivre votre épargne."/>}</section>}
+        {page === 'savings' && <section className="panel page-panel"><div className="panel-heading"><div><h2>Vos objectifs</h2><p>Gardez le cap sur vos projets.</p></div><button className="primary-btn" onClick={() => setShowGoal(true)}><Plus size={16}/> Nouvel objectif</button></div>{data.goals.length ? <div className="goal-grid">{data.goals.map(g => { const pct = Math.min(100, Math.round(g.savedCents / g.targetCents * 100)); const recommended = g.monthlyCents || (g.monthsRemaining && g.monthsRemaining > 0 ? Math.ceil(g.remainingCents / g.monthsRemaining) : 0); return <div className="goal-card" key={g.id}><div className="goal-card-top"><div className="goal-icon"><Target size={21}/></div><span className={pct >= 100 ? 'goal-status complete' : 'goal-status'}>{pct >= 100 ? 'Atteint' : `${pct}%`}</span></div><h3>{g.name}</h3><div className="goal-amount"><strong>{euro(g.savedCents)}</strong> <span>sur {euro(g.targetCents)}</span></div><div className="progress goal-progress"><span style={{width:`${pct}%`}}/></div><div className="goal-details"><small>{pct >= 100 ? 'Objectif atteint' : `${euro(g.remainingCents)} restant`}</small>{g.targetDate && <small>Échéance : {new Date(`${g.targetDate}T12:00:00`).toLocaleDateString('fr-FR')}{g.monthsRemaining !== null ? ` · ${g.monthsRemaining} mois` : ''}</small>}{recommended ? <small>Effort recommandé : {euro(recommended)} / mois</small> : null}{g.accountName && <small>Compte : {g.accountName}</small>}</div></div>; })}</div> : <Empty text="Créez un objectif pour suivre votre épargne."/>}</section>}
         {page === 'recurring' && <RecurringPage data={data} onRefresh={refresh} onError={setError}/>}
-        {page === 'history' && <HistoryPage history={history} search={historySearch} onSearch={setHistorySearch} onEdit={setEditingTransaction} onRefresh={reloadHistory} onError={setError}/>}
+        {page === 'history' && <HistoryPage history={history} search={historySearch} filters={historyFilters} onSearch={setHistorySearch} onFilters={setHistoryFilters} accounts={data.accounts} onEdit={transaction => transaction.transferGroup ? setEditingTransfer(transaction) : setEditingTransaction(transaction)} onRefresh={reloadHistory} onError={setError}/>}
         {page === 'statistics' && <StatisticsPage statistics={statistics} forecast={forecast}/>}
-        {page === 'settings' && <SettingsPage data={data} onRefresh={refresh} onError={setError}/>}
+        {page === 'settings' && <SettingsPage data={data} pinConfigured={pinConfigured} onPinConfigured={setPinConfigured} onLock={() => setLocked(true)} theme={theme} onTheme={setTheme} onRefresh={refresh} onError={setError}/>}
+        {page === 'about' && <AboutPage />}
       </>}
       <footer>Warble <span>•</span> Vos données restent sur cet ordinateur.</footer>
     </main>
 
     {showTransaction && <Modal title="Ajouter une opération" onClose={() => setShowTransaction(false)}><TransactionForm accounts={data?.accounts ?? []} onCancel={() => setShowTransaction(false)} onSave={async v => { await window.budgetPilot.createTransaction(v); setShowTransaction(false); await refresh(); if (page === 'history') await reloadHistory(); }}/></Modal>}
     {showTransfer && <Modal title="Transférer entre comptes" onClose={() => setShowTransfer(false)}><TransferForm accounts={data?.accounts ?? []} onCancel={() => setShowTransfer(false)} onSave={async v => { await window.budgetPilot.createTransfer(v); setShowTransfer(false); await refresh(); }}/></Modal>}
+    {editingTransfer && <Modal title="Modifier le transfert" onClose={() => setEditingTransfer(null)}><TransferForm accounts={data?.accounts ?? []} initial={editingTransfer} onCancel={() => setEditingTransfer(null)} onSave={async v => { await window.budgetPilot.updateTransfer({ ...v, transferGroup: editingTransfer.transferGroup ?? '' }); setEditingTransfer(null); await refresh(); if (page === 'history') await reloadHistory(); }}/></Modal>}
     {editingTransaction && <Modal title="Modifier l'opération" onClose={() => setEditingTransaction(null)}><TransactionForm accounts={data?.accounts ?? []} initial={editingTransaction} onCancel={() => setEditingTransaction(null)} onSave={async v => { await window.budgetPilot.updateTransaction({ ...v, id: editingTransaction.id }); setEditingTransaction(null); await refresh(); if (page === 'history') await reloadHistory(); }}/></Modal>}
     {showAccount && <Modal title="Ajouter un compte" onClose={() => setShowAccount(false)}><AccountForm onCancel={() => setShowAccount(false)} onSave={async v => { await window.budgetPilot.createAccount(v); setShowAccount(false); await refresh(); }}/></Modal>}
     {showBudget && <Modal title="Définir un budget" onClose={() => setShowBudget(false)}><BudgetForm month={data?.month ?? today().slice(0,7)} onCancel={() => setShowBudget(false)} onSave={async v => { await window.budgetPilot.saveBudget(v); setShowBudget(false); await refresh(); }}/></Modal>}
     {editingBudget && <Modal title="Modifier le budget" onClose={() => setEditingBudget(null)}><BudgetForm initial={editingBudget} month={editingBudget.month} onCancel={() => setEditingBudget(null)} onSave={async v => { await window.budgetPilot.saveBudget({ ...v, id: editingBudget.id }); setEditingBudget(null); await refresh(); }}/></Modal>}
-    {showGoal && <Modal title="Nouvel objectif d'épargne" onClose={() => setShowGoal(false)}><GoalForm onCancel={() => setShowGoal(false)} onSave={async v => { await window.budgetPilot.saveSavingsGoal(v); setShowGoal(false); await refresh(); }}/></Modal>}
+    {showGoal && <Modal title="Nouvel objectif d'épargne" onClose={() => setShowGoal(false)}><GoalForm accounts={data?.accounts ?? []} onCancel={() => setShowGoal(false)} onSave={async v => { await window.budgetPilot.saveSavingsGoal(v); setShowGoal(false); await refresh(); }}/></Modal>}
+    {locked && <PinLock onUnlock={() => setLocked(false)} />}
   </div>;
 }
 
@@ -133,27 +194,47 @@ function Stat({ title, value, tone, icon, foot }: { title: string; value: string
   return <div className="stat-card"><div className="stat-top"><span>{title}</span><span className={`stat-icon ${tone}`}>{icon}</span></div><strong>{value}</strong><small>{foot}</small></div>;
 }
 
-function TransferForm({ accounts, onCancel, onSave }: { accounts: DashboardData['accounts']; onCancel: () => void; onSave: (v: { fromAccountId: number; toAccountId: number; amountCents: number; date: string; note: string }) => Promise<void> }) {
-  const [fromAccountId, setFrom] = useState(String(accounts[0]?.id ?? ''));
-  const [toAccountId, setTo] = useState(String(accounts[1]?.id ?? ''));
-  const [amount, setAmount] = useState(''); const [date, setDate] = useState(today()); const [note, setNote] = useState('');
-  async function submit(e: React.FormEvent) { e.preventDefault(); const cents = Math.round(Number(amount.replace(',', '.')) * 100); if (!Number.isSafeInteger(cents) || cents <= 0 || fromAccountId === toAccountId) return; await onSave({ fromAccountId: Number(fromAccountId), toAccountId: Number(toAccountId), amountCents: cents, date, note }); }
-  return <form className="form" onSubmit={submit}><div className="form-row"><label>Depuis<select value={fromAccountId} onChange={e=>setFrom(e.target.value)}>{accounts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label><label>Vers<select value={toAccountId} onChange={e=>setTo(e.target.value)}>{accounts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label></div><label>Montant (€)<input value={amount} onChange={e=>setAmount(e.target.value)} inputMode="decimal" required/></label><label>Date<input type="date" value={date} onChange={e=>setDate(e.target.value)} required/></label><label>Note<input value={note} onChange={e=>setNote(e.target.value)}/></label><div className="form-actions"><button type="button" className="secondary-btn" onClick={onCancel}>Annuler</button><button className="primary-btn">Transférer</button></div></form>;
+function TransferForm({ accounts, initial, onCancel, onSave }: { accounts: DashboardData['accounts']; initial?: DashboardData['transactions'][number]; onCancel: () => void; onSave: (v: { fromAccountId: number; toAccountId: number; amountCents: number; date: string; note: string }) => Promise<void> }) {
+  const [fromAccountId, setFrom] = useState(String(initial?.fromAccountId ?? accounts[0]?.id ?? ''));
+  const [toAccountId, setTo] = useState(String(initial?.toAccountId ?? accounts[1]?.id ?? ''));
+  const [amount, setAmount] = useState(initial ? String(initial.amountCents / 100).replace('.', ',') : '');
+  const [date, setDate] = useState(initial?.date ?? today()); const [note, setNote] = useState(initial?.note ?? '');
+  const [error, setError] = useState('');
+  const source = accounts.find(account => account.id === Number(fromAccountId));
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    const cents = Math.round(Number(amount.replace(',', '.')) * 100);
+    if (!Number.isSafeInteger(cents) || cents <= 0 || fromAccountId === toAccountId) {
+      setError('Vérifiez les comptes et le montant.');
+      return;
+    }
+    if (!source || cents > source.balanceCents) {
+      setError(`Le solde disponible est de ${euro(source?.balanceCents ?? 0)}.`);
+      return;
+    }
+    try {
+      await onSave({ fromAccountId: Number(fromAccountId), toAccountId: Number(toAccountId), amountCents: cents, date, note });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Transfert impossible');
+    }
+  }
+  return <form className="form" onSubmit={submit}><div className="form-row"><label>Depuis<select value={fromAccountId} onChange={e=>{ setFrom(e.target.value); setError(''); }}>{accounts.map(a=><option key={a.id} value={a.id}>{a.name} — {euro(a.balanceCents)}</option>)}</select></label><label>Vers<select value={toAccountId} onChange={e=>setTo(e.target.value)}>{accounts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label></div><label>Montant (€)<input value={amount} onChange={e=>{ setAmount(e.target.value); setError(''); }} inputMode="decimal" required/></label><label>Date<input type="date" value={date} onChange={e=>setDate(e.target.value)} required/></label><label>Note<input value={note} onChange={e=>setNote(e.target.value)}/></label>{error && <p className="form-error">{error}</p>}<div className="form-actions"><button type="button" className="secondary-btn" onClick={onCancel}>Annuler</button><button className="primary-btn">{initial ? 'Enregistrer' : 'Transférer'}</button></div></form>;
 }
 
 function RecurringPage({ data, onRefresh, onError }: { data: DashboardData; onRefresh: () => Promise<void>; onError: (message: string) => void }) {
-  const [label, setLabel] = useState(''); const [amount, setAmount] = useState(''); const [accountId, setAccountId] = useState(String(data.accounts[0]?.id ?? '')); const [type, setType] = useState('expense'); const [frequency, setFrequency] = useState('monthly'); const [nextDate, setNextDate] = useState(today()); const [category, setCategory] = useState(categoryValue('Abonnements', 'Téléphone'));
+  const [label, setLabel] = useState(''); const [amount, setAmount] = useState(''); const [accountId, setAccountId] = useState(String(data.accounts[0]?.id ?? '')); const [type, setType] = useState('expense'); const [frequency, setFrequency] = useState('monthly'); const [nextDate, setNextDate] = useState(today()); const [endDate, setEndDate] = useState(''); const [category, setCategory] = useState(categoryValue('Abonnements', 'Téléphone'));
+  const [runMessage, setRunMessage] = useState('');
   const categoryGroups = categoryGroupsFor(type);
   function changeType(nextType: string) {
     setType(nextType);
     const firstGroup = categoryGroupsFor(nextType)[0];
     setCategory(categoryValue(firstGroup.name, firstGroup.items[0]));
   }
-  async function save(e: React.FormEvent) { e.preventDefault(); try { await window.budgetPilot.saveRecurring({ label, amountCents: Math.round(Number(amount.replace(',', '.')) * 100), accountId: Number(accountId), type, frequency, nextDate, startDate: nextDate, category }); setLabel(''); setAmount(''); await onRefresh(); } catch (e) { onError(e instanceof Error ? e.message : 'Récurrence invalide'); } }
-  return <section className="panel page-panel"><div className="panel-heading"><div><h2>Opérations récurrentes</h2><p>Les échéances sont générées une seule fois par date.</p></div><button className="secondary-btn" onClick={async()=>{ try { await window.budgetPilot.runDueRecurring(); await onRefresh(); } catch(e) { onError(e instanceof Error ? e.message : 'Exécution impossible'); } }}>Rattraper les échéances</button></div><form className="inline-form" onSubmit={save}><input placeholder="Libellé" value={label} onChange={e=>setLabel(e.target.value)} required/><input placeholder="Montant €" value={amount} onChange={e=>setAmount(e.target.value)} required/><select value={accountId} onChange={e=>setAccountId(e.target.value)}>{data.accounts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select><select value={type} onChange={e=>changeType(e.target.value)}><option value="expense">Dépense</option><option value="income">Revenu</option></select><select value={category} onChange={e=>setCategory(e.target.value)}>{categoryGroups.map(group=><optgroup key={group.name} label={group.name}>{group.items.map(item=><option key={item} value={categoryValue(group.name, item)}>{item}</option>)}</optgroup>)}</select><select value={frequency} onChange={e=>setFrequency(e.target.value)}><option value="daily">Quotidienne</option><option value="weekly">Hebdomadaire</option><option value="monthly">Mensuelle</option><option value="quarterly">Trimestrielle</option><option value="yearly">Annuelle</option></select><input type="date" value={nextDate} onChange={e=>setNextDate(e.target.value)}/><button className="primary-btn">Ajouter</button></form>{data.recurring.length ? <div className="table-wrap"><table><thead><tr><th>LIBELLÉ</th><th>TYPE</th><th>FRÉQUENCE</th><th>PROCHAINE ÉCHÉANCE</th><th>MONTANT</th><th>ÉTAT</th></tr></thead><tbody>{data.recurring.map(r=><tr key={r.id}><td>{r.label}</td><td>{r.type === 'income' ? 'Revenu' : 'Dépense'}</td><td>{r.frequency}</td><td>{r.nextDate}</td><td>{euro(r.amountCents)}</td><td><button className="text-btn" onClick={async()=>{ await window.budgetPilot.toggleRecurring({ id:r.id, active: !r.active }); await onRefresh(); }}>{r.active ? 'Suspendre' : 'Réactiver'}</button></td></tr>)}</tbody></table></div> : <Empty text="Aucune opération récurrente définie."/>}</section>;
+  async function save(e: React.FormEvent) { e.preventDefault(); if (endDate && endDate < nextDate) { onError('La date de fin doit être postérieure à la prochaine échéance.'); return; } try { await window.budgetPilot.saveRecurring({ label, amountCents: Math.round(Number(amount.replace(',', '.')) * 100), accountId: Number(accountId), type, frequency, nextDate, startDate: nextDate, endDate: endDate || null, category }); setLabel(''); setAmount(''); setEndDate(''); await onRefresh(); } catch (e) { onError(e instanceof Error ? e.message : 'Récurrence invalide'); } }
+  return <section className="panel page-panel"><div className="panel-heading"><div><h2>Opérations récurrentes</h2><p>Les échéances sont générées une seule fois par date.</p></div><button className="secondary-btn" onClick={async()=>{ try { const result = await window.budgetPilot.runDueRecurring(); setRunMessage(`${result.created} opération(s) générée(s)${result.skipped ? ` · ${result.skipped} échéance(s) ignorée(s) pour solde insuffisant` : ''}.`); await onRefresh(); } catch(e) { onError(e instanceof Error ? e.message : 'Exécution impossible'); } }}>Rattraper les échéances</button></div>{runMessage && <p className="success-message" role="status"><span className="status-dot"/> {runMessage}</p>}<form className="inline-form recurring-form" onSubmit={save}><label>Libellé<input placeholder="Ex. Loyer" value={label} onChange={e=>setLabel(e.target.value)} required/></label><label>Montant<input placeholder="0,00 €" value={amount} onChange={e=>setAmount(e.target.value)} inputMode="decimal" required/></label><label>Compte<select value={accountId} onChange={e=>setAccountId(e.target.value)}>{data.accounts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></label><label>Type<select value={type} onChange={e=>changeType(e.target.value)}><option value="expense">Dépense</option><option value="income">Revenu</option></select></label><label>Catégorie<select value={category} onChange={e=>setCategory(e.target.value)}>{categoryGroups.map(group=><optgroup key={group.name} label={group.name}>{group.items.map(item=><option key={item} value={categoryValue(group.name, item)}>{item}</option>)}</optgroup>)}</select></label><label>Fréquence<select value={frequency} onChange={e=>setFrequency(e.target.value)}><option value="daily">Quotidienne</option><option value="weekly">Hebdomadaire</option><option value="monthly">Mensuelle</option><option value="quarterly">Trimestrielle</option><option value="yearly">Annuelle</option></select></label><label>Date de début<input type="date" value={nextDate} onChange={e=>setNextDate(e.target.value)}/></label><label>Date de fin<input type="date" value={endDate} min={nextDate} onChange={e=>setEndDate(e.target.value)}/></label><button className="primary-btn">Ajouter la récurrence</button></form>{data.recurring.length ? <div className="table-wrap recurring-table"><table><thead><tr><th>LIBELLÉ</th><th>TYPE</th><th>FRÉQUENCE</th><th>PROCHAINE ÉCHÉANCE</th><th>FIN</th><th>MONTANT</th><th>ÉTAT</th></tr></thead><tbody>{data.recurring.map(r=><tr key={r.id}><td><strong>{r.label}</strong></td><td><span className={`recurring-type ${r.type}`}>{r.type === 'income' ? 'Revenu' : 'Dépense'}</span></td><td>{r.frequency}</td><td>{r.nextDate}</td><td>{r.endDate ?? 'Sans fin'}</td><td className="recurring-amount">{euro(r.amountCents)}</td><td><button className={`recurring-status ${r.active ? 'active' : 'paused'}`} onClick={async()=>{ await window.budgetPilot.toggleRecurring({ id:r.id, active: !r.active }); await onRefresh(); }}><span className="status-dot"/> {r.active ? 'Active' : 'Suspendue'}</button></td></tr>)}</tbody></table></div> : <Empty text="Aucune opération récurrente définie."/>}</section>;
 }
 
-function HistoryPage({ history, search, onSearch, onEdit, onRefresh, onError }: { history: DashboardData['transactions']; search: string; onSearch: (value: string) => void; onEdit: (transaction: DashboardData['transactions'][number]) => void; onRefresh: () => Promise<void>; onError: (message: string) => void }) {
+function HistoryPage({ history, search, filters, accounts, onSearch, onFilters, onEdit, onRefresh, onError }: { history: DashboardData['transactions']; search: string; filters: HistoryFilters; accounts: DashboardData['accounts']; onSearch: (value: string) => void; onFilters: (filters: HistoryFilters) => void; onEdit: (transaction: DashboardData['transactions'][number]) => void; onRefresh: () => Promise<void>; onError: (message: string) => void }) {
   const groups = history.reduce<Record<string, DashboardData['transactions']>>((result, transaction) => {
     const month = transaction.date.slice(0, 7);
     result[month] = [...(result[month] ?? []), transaction];
@@ -172,8 +253,17 @@ function HistoryPage({ history, search, onSearch, onEdit, onRefresh, onError }: 
 
   return <section className="panel page-panel">
     <div className="panel-heading"><div><h2>Toutes vos opérations</h2><p>Historique complet regroupé par mois. Chaque opération peut être modifiée.</p></div><span className="history-count">{history.length} opération{history.length > 1 ? 's' : ''}</span></div>
-    <input className="search-input" value={search} onChange={e => onSearch(e.target.value)} placeholder="Rechercher un libellé ou une catégorie..." />
-    {Object.keys(groups).length ? <div className="history-months">{Object.entries(groups).map(([month, transactions]) => <section className="history-month" key={month}><div className="history-month-heading"><h3>{new Intl.DateTimeFormat('fr-FR', { month: 'long', year: 'numeric' }).format(new Date(`${month}-01T12:00:00`))}</h3><span>{transactions.length} opération{transactions.length > 1 ? 's' : ''}</span></div><div className="table-wrap"><table><thead><tr><th>DATE</th><th>TYPE</th><th>LIBELLÉ</th><th>CATÉGORIE</th><th>COMPTE</th><th className="align-right">MONTANT</th><th></th></tr></thead><tbody>{transactions.map(transaction => <tr key={transaction.id}><td>{new Date(transaction.date + 'T12:00:00').toLocaleDateString('fr-FR')}</td><td><span className={`history-type ${transaction.type}`}>{transaction.type === 'income' ? 'Revenu' : 'Dépense'}</span></td><td>{transaction.note || transaction.category}</td><td><span className="category-pill">{transaction.category}</span></td><td>{transaction.accountName}</td><td className={`align-right amount ${transaction.type === 'income' ? 'positive' : 'negative'}`}>{transaction.type === 'income' ? '+' : '−'}{euro(transaction.amountCents)}</td><td><button className="table-action" title="Modifier cette opération" onClick={() => onEdit(transaction)}><Pencil size={14}/></button><button className="table-action danger" title="Supprimer cette opération" onClick={() => void remove(transaction)}><Trash2 size={14}/></button></td></tr>)}</tbody></table></div></section>)}</div> : <Empty text="Aucune opération ne correspond à votre recherche."/>}
+    <div className="history-filters">
+      <input className="search-input" value={search} onChange={e => onSearch(e.target.value)} placeholder="Rechercher un libellé ou une catégorie..." />
+      <input type="date" value={filters.from === '0000-01-01' ? '' : filters.from} onChange={e => onFilters({ ...filters, from: e.target.value || '0000-01-01' })} aria-label="Date de début" />
+      <input type="date" value={filters.to === '9999-12-31' ? '' : filters.to} onChange={e => onFilters({ ...filters, to: e.target.value || '9999-12-31' })} aria-label="Date de fin" />
+      <select value={filters.type} onChange={e => onFilters({ ...filters, type: e.target.value })} aria-label="Type"><option value="">Tous les types</option><option value="income">Revenus</option><option value="expense">Dépenses</option></select>
+      <select value={filters.accountId} onChange={e => onFilters({ ...filters, accountId: Number(e.target.value) })} aria-label="Compte"><option value={0}>Tous les comptes</option>{accounts.map(account => <option value={account.id} key={account.id}>{account.name}</option>)}</select>
+      <input type="number" min="0" step="0.01" placeholder="Min €" value={filters.minAmount ? filters.minAmount / 100 : ''} onChange={e => onFilters({ ...filters, minAmount: Math.round(Number(e.target.value || 0) * 100) })} aria-label="Montant minimum" />
+      <input type="number" min="0" step="0.01" placeholder="Max €" value={filters.maxAmount ? filters.maxAmount / 100 : ''} onChange={e => onFilters({ ...filters, maxAmount: Math.round(Number(e.target.value || 0) * 100) })} aria-label="Montant maximum" />
+      <select value={filters.sort} onChange={e => onFilters({ ...filters, sort: e.target.value as 'date' | 'amount' })} aria-label="Tri"><option value="date">Plus récentes</option><option value="amount">Montant décroissant</option></select>
+    </div>
+    {Object.keys(groups).length ? <div className="history-months">{Object.entries(groups).map(([month, transactions]) => <section className="history-month" key={month}><div className="history-month-heading"><h3>{new Intl.DateTimeFormat('fr-FR', { month: 'long', year: 'numeric' }).format(new Date(`${month}-01T12:00:00`))}</h3><span>{transactions.length} opération{transactions.length > 1 ? 's' : ''}</span></div><div className="table-wrap"><table><thead><tr><th>DATE</th><th>TYPE</th><th>LIBELLÉ</th><th>CATÉGORIE</th><th>COMPTE</th><th className="align-right">MONTANT</th><th></th></tr></thead><tbody>{transactions.map(transaction => <tr key={transaction.id}><td>{new Date(transaction.date + 'T12:00:00').toLocaleDateString('fr-FR')}</td><td><span className={`history-type ${transaction.transferGroup ? 'transfer' : transaction.type}`}>{transaction.transferGroup ? 'Transfert' : transaction.type === 'income' ? 'Revenu' : 'Dépense'}</span></td><td>{transaction.note || transaction.category}</td><td><span className="category-pill">{transaction.category}</span></td><td>{transaction.transferGroup ? `${transaction.fromAccountName} → ${transaction.toAccountName}` : transaction.accountName}</td><td className={`align-right amount ${transaction.type === 'income' ? 'positive' : 'negative'}`}>{transaction.transferGroup ? '' : transaction.type === 'income' ? '+' : '−'}{transaction.transferGroup ? euro(transaction.amountCents) : euro(transaction.amountCents)}</td><td>    <button className="table-action" title="Modifier cette opération" aria-label={`Modifier ${transaction.note || transaction.category}`} onClick={() => onEdit(transaction)}><Pencil size={14}/></button><button className="table-action danger" title="Supprimer cette opération" aria-label={`Supprimer ${transaction.note || transaction.category}`} onClick={() => void remove(transaction)}><Trash2 size={14}/></button></td></tr>)}</tbody></table></div></section>)}</div> : <Empty text="Aucune opération ne correspond à votre recherche."/>}
   </section>;
 }
 
@@ -208,7 +298,7 @@ function BudgetGroups({ budgets, onEdit, onDelete }: { budgets: DashboardData['b
     const children = items.filter(item => item.category !== parent);
     return <details className="budget-group" key={parent} open={Boolean(children.length)}>
       <summary><span>{parent}</span><small>{children.length ? `${children.length} sous-catégorie${children.length > 1 ? 's' : ''}` : 'Budget principal'}</small></summary>
-      <div className="budget-group-items">{children.length ? <BudgetAggregate parent={parent} budgets={children}/> : legacyParent ? <div className="budget-legacy"><span>Ancien budget principal à répartir en sous-catégories</span><button className="table-action danger" title="Supprimer cet ancien budget" onClick={() => void onDelete(legacyParent)}><Trash2 size={14}/></button></div> : <p className="budget-empty">Ajoutez une sous-catégorie pour définir le plafond de cette catégorie.</p>}{children.map(budget => <BudgetRow budget={budget} key={budget.id} onEdit={onEdit} onDelete={onDelete}/>)}</div>
+      <div className="budget-group-items">{children.length ? <BudgetAggregate parent={parent} budgets={children}/> : legacyParent ? <div className="budget-legacy"><span>Ancien budget principal à répartir en sous-catégories</span>      <button className="table-action danger" title="Supprimer cet ancien budget" aria-label="Supprimer cet ancien budget" onClick={() => void onDelete(legacyParent)}><Trash2 size={14}/></button></div> : <p className="budget-empty">Ajoutez une sous-catégorie pour définir le plafond de cette catégorie.</p>}{children.map(budget => <BudgetRow budget={budget} key={budget.id} onEdit={onEdit} onDelete={onDelete}/>)}</div>
     </details>;
   })}</div>;
 }
@@ -217,17 +307,148 @@ function BudgetAggregate({ parent, budgets }: { parent: string; budgets: Dashboa
   const limitCents = budgets.reduce((total, budget) => total + budget.limitCents, 0);
   const spentCents = budgets.reduce((total, budget) => total + budget.spentCents, 0);
   const pct = Math.min(100, Math.round(spentCents / limitCents * 100));
-  return <div className="budget-row budget-row-primary"><div className="budget-meta"><strong>{parent}</strong><span>{euro(spentCents)} / {euro(limitCents)}</span></div><div className="progress"><span style={{ width: `${pct}%`, background: pct >= 100 ? '#f07886' : '#8b7cff' }}/></div><div className="budget-row-footer"><small>{pct}% utilisé · total des sous-catégories</small></div></div>;
+  return <div className={`budget-row budget-row-primary budget-level-${budgetLevel(pct)}`}><div className="budget-meta"><strong>{parent}</strong><span>{euro(spentCents)} / {euro(limitCents)}</span></div><div className="progress"><span style={{ width: `${pct}%`, background: budgetColor(pct) }}/></div><div className="budget-row-footer"><small>{pct}% utilisé · {budgetMessage(pct)} · total des sous-catégories</small></div></div>;
 }
 
 function BudgetRow({ budget, primary = false, onEdit, onDelete }: { budget: DashboardData['budgets'][number]; primary?: boolean; onEdit: (budget: DashboardData['budgets'][number]) => void; onDelete: (budget: DashboardData['budgets'][number]) => Promise<void> }) {
   const pct = Math.min(100, Math.round(budget.spentCents / budget.limitCents * 100));
   const label = primary ? budget.category : budget.category.split(' / ').slice(1).join(' / ');
-  return <div className={`budget-row ${primary ? 'budget-row-primary' : 'budget-row-child'}`}><div className="budget-meta"><strong>{label}</strong><span>{euro(budget.spentCents)} / {euro(budget.limitCents)}</span></div><div className="progress"><span style={{ width: `${pct}%`, background: pct >= 100 ? '#f07886' : '#8b7cff' }}/></div><div className="budget-row-footer"><small>{pct}% utilisé</small><span className="budget-actions"><button className="table-action" title="Modifier le budget" onClick={() => onEdit(budget)}><Pencil size={14}/></button><button className="table-action danger" title="Supprimer le budget" onClick={() => void onDelete(budget)}><Trash2 size={14}/></button></span></div></div>;
+  return <div className={`budget-row ${primary ? 'budget-row-primary' : 'budget-row-child'} budget-level-${budgetLevel(pct)}`}><div className="budget-meta"><strong>{label}</strong><span>{euro(budget.spentCents)} / {euro(budget.limitCents)}</span></div><div className="progress"><span style={{ width: `${pct}%`, background: budgetColor(pct) }}/></div><div className="budget-row-footer"><small>{pct}% utilisé · {budgetMessage(pct)}</small><span className="budget-actions">  <button className="table-action" title="Modifier le budget" aria-label={`Modifier le budget ${budget.category}`} onClick={() => onEdit(budget)}><Pencil size={14}/></button><button className="table-action danger" title="Supprimer le budget" aria-label={`Supprimer le budget ${budget.category}`} onClick={() => void onDelete(budget)}><Trash2 size={14}/></button></span></div></div>;
 }
 
-function SettingsPage({ data, onRefresh, onError }: { data: DashboardData; onRefresh: () => Promise<void>; onError: (message: string) => void }) {
+function budgetLevel(pct: number): 'safe' | 'warning' | 'limit' | 'over' {
+  if (pct >= 120) return 'over';
+  if (pct >= 100) return 'limit';
+  if (pct >= 80) return 'warning';
+  return 'safe';
+}
+
+function budgetColor(pct: number): string {
+  const level = budgetLevel(pct);
+  return level === 'over' || level === 'limit' ? '#f07886' : level === 'warning' ? '#e5ad65' : '#8b7cff';
+}
+
+function budgetMessage(pct: number): string {
+  if (pct >= 120) return 'budget dépassé de 20% ou plus';
+  if (pct >= 100) return 'budget dépassé';
+  if (pct >= 80) return 'attention';
+  return 'dans la limite';
+}
+
+function SecuritySettings({ configured, onConfigured, onLock, theme, onTheme }: { configured: boolean; onConfigured: (value: boolean) => void; onLock: () => void; theme: 'dark' | 'light'; onTheme: (value: 'dark' | 'light') => void }) {
+  const [dialogMode, setDialogMode] = useState<'set' | 'remove' | null>(null);
+  const [pin, setPin] = useState('');
+  const [error, setError] = useState('');
+  const pinDialogRef = useRef<HTMLFormElement>(null);
+  const pinOpenerRef = useRef<HTMLElement | null>(null);
+
+  function openDialog(mode: 'set' | 'remove') {
+    setDialogMode(mode);
+    setPin('');
+    setError('');
+  }
+
+  function closeDialog() {
+    setDialogMode(null);
+    setPin('');
+    setError('');
+  }
+
+  useEffect(() => {
+    if (!dialogMode) return;
+    pinOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const firstFocusable = pinDialogRef.current?.querySelector<HTMLElement>('input, button');
+    firstFocusable?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeDialog();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = pinDialogRef.current?.querySelectorAll<HTMLElement>('input:not([disabled]), button:not([disabled])');
+      if (!focusable?.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      pinOpenerRef.current?.focus();
+    };
+  }, [dialogMode]);
+
+  async function submitPin(event: React.FormEvent) {
+    event.preventDefault();
+    if (!/^\d{4,6}$/.test(pin)) {
+      setError('Le PIN doit contenir entre 4 et 6 chiffres.');
+      return;
+    }
+    try {
+      if (dialogMode === 'set') {
+        await window.budgetPilot.setPin({ pin });
+        onConfigured(true);
+      } else {
+        await window.budgetPilot.removePin({ pin });
+        onConfigured(false);
+      }
+      closeDialog();
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Opération impossible');
+    }
+  }
+  return <><section className="settings-security"><h3>Sécurité et apparence</h3><div className="settings-row"><span>{configured ? 'Verrouillage automatique activé (5 min)' : 'Verrouillage par PIN désactivé'}</span><div className="settings-row-actions">{configured && <button className="text-btn" onClick={onLock}>Verrouiller maintenant</button>}<button className="text-btn" onClick={() => openDialog(configured ? 'remove' : 'set')}>{configured ? 'Désactiver le PIN' : 'Configurer un PIN'}</button></div></div><div className="settings-row"><span>Thème de l’application</span><select value={theme} onChange={e => onTheme(e.target.value as 'dark' | 'light')}><option value="dark">Sombre</option><option value="light">Clair</option></select></div></section>{dialogMode && <div className="modal-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) closeDialog(); }}><form ref={pinDialogRef} className="modal" onSubmit={submitPin} role="dialog" aria-modal="true" aria-labelledby="pin-dialog-title"><div className="modal-header"><h2 id="pin-dialog-title">{dialogMode === 'set' ? 'Configurer le code PIN' : 'Désactiver le code PIN'}</h2><button type="button" className="icon-btn" onClick={closeDialog} aria-label="Fermer">×</button></div><p>{dialogMode === 'set' ? 'Choisissez un code de 4 à 6 chiffres.' : 'Saisissez votre code PIN actuel.'}</p><input type="password" inputMode="numeric" pattern="[0-9]*" maxLength={6} value={pin} onChange={event => { setPin(event.target.value); setError(''); }} aria-label="Code PIN" required/>{error && <p className="form-error" role="alert">{error}</p>}<div className="modal-actions"><button type="button" className="secondary-btn" onClick={closeDialog}>Annuler</button><button type="submit" className="primary-btn">{dialogMode === 'set' ? 'Configurer' : 'Désactiver'}</button></div></form></div>}</>;
+}
+
+function AutoBackupSettings({ enabled, onEnabled, onError }: { enabled: boolean; onEnabled: (value: boolean) => void; onError: (message: string) => void }) {
+  async function toggle() {
+    try {
+      const result = await window.budgetPilot.setAutoBackup({ enabled: !enabled });
+      onEnabled(result.enabled);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : 'Configuration impossible');
+    }
+  }
+  return <div className="settings-row"><span>{enabled ? 'Sauvegarde automatique chiffrée activée (au démarrage)' : 'Sauvegarde automatique désactivée'}</span><button className="text-btn" onClick={() => void toggle()}>{enabled ? 'Désactiver' : 'Activer'}</button></div>;
+}
+
+function PinLock({ onUnlock }: { onUnlock: () => void }) {
+  const [pin, setPin] = useState('');
+  const [error, setError] = useState('');
+  async function unlock(event: React.FormEvent) {
+    event.preventDefault();
+    try {
+      const valid = await window.budgetPilot.verifyPin({ pin });
+      if (valid) {
+        onUnlock();
+        return;
+      }
+      setPin('');
+      setError('PIN incorrect.');
+    } catch (error) {
+      setPin('');
+      setError(error instanceof Error ? error.message : 'Vérification du PIN impossible.');
+    }
+  }
+  return <div className="pin-lock"><form className="pin-card" onSubmit={unlock}><div className="brand-icon"><img src={logoUrl} alt=""/></div><h2>Warble est verrouillé</h2><p>Entrez votre PIN pour continuer.</p><input type="password" inputMode="numeric" pattern="[0-9]*" maxLength={6} autoFocus value={pin} onChange={event => { setPin(event.target.value); setError(''); }} aria-label="PIN" required/>{error && <p className="form-error">{error}</p>}<button className="primary-btn">Déverrouiller</button></form></div>;
+}
+
+function AboutPage() {
+  return <section className="panel page-panel about-page"><div className="brand-icon"><img src={logoUrl} alt="Warble"/></div><h2>Warble</h2><p>Gestionnaire local de finances personnelles.</p><p className="muted-label">VERSION 0.1.1 · DONNÉES STOCKÉES LOCALEMENT</p><p>Warble protège vos données en les conservant sur cet ordinateur. Pensez à créer régulièrement une sauvegarde chiffrée depuis Paramètres.</p></section>;
+}
+
+function SettingsPage({ data, pinConfigured, onPinConfigured, onLock, theme, onTheme, onRefresh, onError }: { data: DashboardData; pinConfigured: boolean; onPinConfigured: (configured: boolean) => void; onLock: () => void; theme: 'dark' | 'light'; onTheme: (theme: 'dark' | 'light') => void; onRefresh: () => Promise<void>; onError: (message: string) => void }) {
   const [name, setName] = useState(''); const [type, setType] = useState('expense');
+  const [importAccountId, setImportAccountId] = useState(String(data.accounts[0]?.id ?? ''));
+  const [autoBackup, setAutoBackup] = useState(false);
+  useEffect(() => { void window.budgetPilot.getAutoBackupStatus().then(status => setAutoBackup(status.enabled)).catch(e => onError(e instanceof Error ? e.message : 'Statut de sauvegarde indisponible')); }, [onError]);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingName, setEditingName] = useState('');
   const [editingType, setEditingType] = useState('expense');
@@ -244,11 +465,43 @@ function SettingsPage({ data, onRefresh, onError }: { data: DashboardData; onRef
     try { await window.budgetPilot.archiveCategory(id); await onRefresh(); }
     catch (e) { onError(e instanceof Error ? e.message : 'Suppression impossible'); }
   }
-  return <section className="panel page-panel"><div className="panel-heading"><div><h2>Paramètres et données</h2><p>Les fichiers restent sur cet ordinateur.</p></div><div className="top-actions"><button className="secondary-btn" onClick={async()=>{ try { await window.budgetPilot.backup(); } catch(e) { onError(e instanceof Error ? e.message : 'Sauvegarde impossible'); } }}>Sauvegarder</button><button className="secondary-btn" onClick={async()=>{ try { await window.budgetPilot.restore(); } catch(e) { onError(e instanceof Error ? e.message : 'Restauration impossible'); } }}>Restaurer</button></div></div><h3>Catégories</h3><form className="inline-form" onSubmit={async e=>{ e.preventDefault(); try { await window.budgetPilot.saveCategory({ name, type }); setName(''); await onRefresh(); } catch(e) { onError(e instanceof Error ? e.message : 'Catégorie invalide'); } }}><input placeholder="Nouvelle catégorie" value={name} onChange={e=>setName(e.target.value)} required/><select value={type} onChange={e=>setType(e.target.value)}><option value="expense">Dépense</option><option value="income">Revenu</option></select><button className="primary-btn">Ajouter</button></form><div className="category-settings-list">{data.categories.map(c=>editingId === c.id ? <div className="category-setting-row" key={c.id}><input value={editingName} onChange={e=>setEditingName(e.target.value)} autoFocus/><select value={editingType} onChange={e=>setEditingType(e.target.value)}><option value="expense">Dépense</option><option value="income">Revenu</option></select><button className="text-btn" onClick={() => void saveEditedCategory()}>Enregistrer</button><button className="text-btn" onClick={() => setEditingId(null)}>Annuler</button></div> : <div className="category-setting-row" key={c.id}><span className="category-pill">{c.name}</span><span className="category-setting-type">{c.type === 'income' ? 'Revenu' : 'Dépense'}</span><button className="text-btn" onClick={() => { setEditingId(c.id); setEditingName(c.name); setEditingType(c.type); }}>Modifier</button><button className="text-btn danger-text" onClick={() => void removeCategory(c.id, c.name)}>Supprimer</button></div>)}</div><h3>Comptes actifs</h3>{data.accounts.map(a=><div className="settings-row" key={a.id}><span>{a.name}</span><button className="text-btn" onClick={async()=>{ try { await window.budgetPilot.archiveAccount(a.id); await onRefresh(); } catch(e) { onError(e instanceof Error ? e.message : 'Archivage impossible'); } }}>Archiver</button></div>)}</section>;
+  return <section className="panel page-panel"><div className="panel-heading"><div><h2>Paramètres et données</h2><p>Les fichiers restent sur cet ordinateur.</p></div><div className="top-actions"><button className="secondary-btn" onClick={async()=>{ const password = window.prompt('Choisissez un mot de passe (8 caractères minimum) :'); if (password === null) return; try { await window.budgetPilot.backup({ password }); } catch(e) { onError(e instanceof Error ? e.message : 'Sauvegarde impossible'); } }}>Sauvegarder chiffré</button><button className="secondary-btn" onClick={async()=>{ const password = window.prompt('Mot de passe de la sauvegarde (laisser vide pour une ancienne sauvegarde SQLite) :') ?? ''; try { await window.budgetPilot.restore({ password: password || undefined }); } catch(e) { onError(e instanceof Error ? e.message : 'Restauration impossible'); } }}>Restaurer</button><select value={importAccountId} onChange={e=>setImportAccountId(e.target.value)} aria-label="Compte de destination de l'import">{data.accounts.map(account=><option value={account.id} key={account.id}>{account.name}</option>)}</select><button className="secondary-btn" onClick={async()=>{ if (!importAccountId) { onError('Créez un compte avant d’importer.'); return; } try { const result = await window.budgetPilot.importCsv({ accountId: Number(importAccountId) }); if (!result.canceled) onError(`${result.imported ?? 0} opération(s) importée(s), ${result.duplicates ?? 0} doublon(s) ignoré(s).`); await onRefresh(); } catch(e) { onError(e instanceof Error ? e.message : 'Import impossible'); } }}>Importer CSV</button></div></div><SecuritySettings configured={pinConfigured} onConfigured={onPinConfigured} onLock={onLock} theme={theme} onTheme={onTheme}/><AutoBackupSettings enabled={autoBackup} onEnabled={setAutoBackup} onError={onError}/><h3>Catégories</h3><form className="inline-form" onSubmit={async e=>{ e.preventDefault(); try { await window.budgetPilot.saveCategory({ name, type }); setName(''); await onRefresh(); } catch(e) { onError(e instanceof Error ? e.message : 'Catégorie invalide'); } }}><input placeholder="Nouvelle catégorie" value={name} onChange={e=>setName(e.target.value)} required/><select value={type} onChange={e=>setType(e.target.value)}><option value="expense">Dépense</option><option value="income">Revenu</option></select><button className="primary-btn">Ajouter</button></form><div className="category-settings-list">{data.categories.map(c=>editingId === c.id ? <div className="category-setting-row" key={c.id}><input value={editingName} onChange={e=>setEditingName(e.target.value)} autoFocus/><select value={editingType} onChange={e=>setEditingType(e.target.value)}><option value="expense">Dépense</option><option value="income">Revenu</option></select><button className="text-btn" onClick={() => void saveEditedCategory()}>Enregistrer</button><button className="text-btn" onClick={() => setEditingId(null)}>Annuler</button></div> : <div className="category-setting-row" key={c.id}><span className="category-pill">{c.name}</span><span className="category-setting-type">{c.type === 'income' ? 'Revenu' : 'Dépense'}</span><button className="text-btn" onClick={() => { setEditingId(c.id); setEditingName(c.name); setEditingType(c.type); }}>Modifier</button><button className="text-btn danger-text" onClick={() => void removeCategory(c.id, c.name)}>Supprimer</button></div>)}</div><h3>Comptes actifs</h3>{data.accounts.map(a=><div className="settings-row" key={a.id}><span>{a.name}</span><button className="text-btn" onClick={async()=>{ try { await window.budgetPilot.archiveAccount(a.id); await onRefresh(); } catch(e) { onError(e instanceof Error ? e.message : 'Archivage impossible'); } }}>Archiver</button></div>)}</section>;
 }
 function Empty({ text }: { text: string }) { return <div className="empty"><div className="empty-icon"><Activity size={22}/></div><p>{text}</p></div>; }
 function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  return <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}><div className="modal"><div className="modal-header"><h2>{title}</h2><button className="icon-btn" onClick={onClose}>×</button></div>{children}</div></div>;
+  const modalRef = useRef<HTMLDivElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const firstFocusable = modalRef.current?.querySelector<HTMLElement>('input, select, button, textarea, [tabindex]:not([tabindex="-1"])');
+    firstFocusable?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = modalRef.current?.querySelectorAll<HTMLElement>('input:not([disabled]), select:not([disabled]), button:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])');
+      if (!focusable?.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      openerRef.current?.focus();
+    };
+  }, []);
+  return <div className="modal-backdrop" role="presentation" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}><div ref={modalRef} className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div className="modal-header"><h2 id="modal-title">{title}</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Fermer la fenêtre">×</button></div>{children}</div></div>;
 }
 function TransactionForm({ accounts, initial, onCancel, onSave }: { accounts: DashboardData['accounts']; initial?: DashboardData['transactions'][number]; onCancel: () => void; onSave: (v: { accountId: number; type: string; amountCents: number; date: string; category: string; note: string }) => Promise<void> }) {
   const [type, setType] = useState(initial?.type ?? 'expense');
@@ -278,8 +531,8 @@ function BudgetForm({ month, initial, onCancel, onSave }: { month: string; initi
   async function submit(e: React.FormEvent) { e.preventDefault(); const cents=Math.round(Number(amount.replace(',','.'))*100); if(!Number.isSafeInteger(cents)||cents<=0){setError('Entrez un budget positif.');return;} try{await onSave({category,limitCents:cents,month});}catch(e){setError(e instanceof Error?e.message:'Erreur');} }
   return <form className="form" onSubmit={submit}><label>Sous-catégorie<select value={category} onChange={e=>setCategory(e.target.value)}>{EXPENSE_CATEGORY_GROUPS.map(group=><optgroup key={group.name} label={group.name}>{group.items.map(item=><option key={item} value={categoryValue(group.name, item)}>{item}</option>)}</optgroup>)}</select></label><label>Limite mensuelle (€)<input value={amount} onChange={e=>setAmount(e.target.value)} placeholder="Ex. 250" inputMode="decimal" required/></label><label>Mois<input value={month} disabled/></label>{error&&<p className="form-error">{error}</p>}<div className="form-actions"><button type="button" className="secondary-btn" onClick={onCancel}>Annuler</button><button className="primary-btn">Enregistrer le budget</button></div></form>;
 }
-function GoalForm({ onCancel, onSave }: { onCancel: () => void; onSave: (v: { name: string; targetCents: number; savedCents: number }) => Promise<void> }) {
-  const [name,setName]=useState(''); const [target,setTarget]=useState(''); const [saved,setSaved]=useState('0'); const [error,setError]=useState('');
-  async function submit(e: React.FormEvent) { e.preventDefault(); const t=Math.round(Number(target.replace(',','.'))*100), s=Math.round(Number(saved.replace(',','.'))*100); if(!name.trim()||!Number.isSafeInteger(t)||t<=0||!Number.isSafeInteger(s)||s<0){setError('Vérifiez le nom et les montants.');return;} try{await onSave({name:name.trim(),targetCents:t,savedCents:s});}catch(e){setError(e instanceof Error?e.message:'Erreur');} }
-  return <form className="form" onSubmit={submit}><label>Nom du projet<input value={name} onChange={e=>setName(e.target.value)} placeholder="Ex. Vacances" required/></label><label>Objectif (€)<input value={target} onChange={e=>setTarget(e.target.value)} inputMode="decimal" required/></label><label>Déjà épargné (€)<input value={saved} onChange={e=>setSaved(e.target.value)} inputMode="decimal" required/></label>{error&&<p className="form-error">{error}</p>}<div className="form-actions"><button type="button" className="secondary-btn" onClick={onCancel}>Annuler</button><button className="primary-btn">Créer l'objectif</button></div></form>;
+function GoalForm({ accounts, onCancel, onSave }: { accounts: DashboardData['accounts']; onCancel: () => void; onSave: (v: { name: string; targetCents: number; savedCents: number; targetDate?: string; monthlyCents?: number; accountId?: number }) => Promise<void> }) {
+  const [name,setName]=useState(''); const [target,setTarget]=useState(''); const [saved,setSaved]=useState('0'); const [targetDate,setTargetDate]=useState(''); const [monthly,setMonthly]=useState(''); const [accountId,setAccountId]=useState(''); const [error,setError]=useState('');
+  async function submit(e: React.FormEvent) { e.preventDefault(); const t=Math.round(Number(target.replace(',','.'))*100), s=Math.round(Number(saved.replace(',','.'))*100), m=monthly ? Math.round(Number(monthly.replace(',','.'))*100) : 0; if(!name.trim()||!Number.isSafeInteger(t)||t<=0||!Number.isSafeInteger(s)||s<0||!Number.isSafeInteger(m)||m<0){setError('Vérifiez le nom et les montants.');return;} try{await onSave({name:name.trim(),targetCents:t,savedCents:s,targetDate:targetDate||undefined,monthlyCents:m,accountId:accountId ? Number(accountId) : undefined});}catch(e){setError(e instanceof Error?e.message:'Erreur');} }
+  return <form className="form" onSubmit={submit}><label>Nom du projet<input value={name} onChange={e=>setName(e.target.value)} placeholder="Ex. Vacances" required/></label><label>Objectif (€)<input value={target} onChange={e=>setTarget(e.target.value)} inputMode="decimal" required/></label><label>Déjà épargné (€)<input value={saved} onChange={e=>setSaved(e.target.value)} inputMode="decimal" required/></label><div className="form-row"><label>Date cible<input type="date" value={targetDate} onChange={e=>setTargetDate(e.target.value)}/></label><label>Épargne mensuelle (€)<input value={monthly} onChange={e=>setMonthly(e.target.value)} inputMode="decimal" placeholder="Automatique"/></label></div><label>Compte associé (facultatif)<select value={accountId} onChange={e=>setAccountId(e.target.value)}><option value="">Aucun compte associé</option>{accounts.map(account=><option value={account.id} key={account.id}>{account.name}</option>)}</select></label>{error&&<p className="form-error">{error}</p>}<div className="form-actions"><button type="button" className="secondary-btn" onClick={onCancel}>Annuler</button><button className="primary-btn">Créer l'objectif</button></div></form>;
 }

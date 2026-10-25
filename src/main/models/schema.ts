@@ -66,6 +66,33 @@ export function migrate(db: Database.Database) {
       INSERT INTO schema_migrations (version) VALUES (2);
     `);
   }
+  if (current < 3) {
+    const goals = db.prepare('PRAGMA table_info(savings_goals)').all() as Array<{ name: string }>;
+    if (!goals.some(column => column.name === 'target_date')) db.exec('ALTER TABLE savings_goals ADD COLUMN target_date TEXT');
+    if (!goals.some(column => column.name === 'monthly_cents')) db.exec('ALTER TABLE savings_goals ADD COLUMN monthly_cents INTEGER');
+    if (!goals.some(column => column.name === 'account_id')) db.exec('ALTER TABLE savings_goals ADD COLUMN account_id INTEGER REFERENCES accounts(id)');
+    db.prepare('INSERT INTO schema_migrations (version) VALUES (3)').run();
+  }
+  if (current < 4) {
+    const transactions = db.prepare('PRAGMA table_info(transactions)').all() as Array<{ name: string }>;
+    if (!transactions.some(column => column.name === 'import_hash')) {
+      db.exec('ALTER TABLE transactions ADD COLUMN import_hash TEXT');
+      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_import_hash ON transactions(import_hash) WHERE import_hash IS NOT NULL');
+    }
+    db.prepare('INSERT INTO schema_migrations (version) VALUES (4)').run();
+  }
+  if (current < 5) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS recurrence_skips (
+        recurring_id INTEGER NOT NULL REFERENCES recurring_transactions(id) ON DELETE CASCADE,
+        due_date TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (recurring_id, due_date)
+      );
+    `);
+    db.prepare('INSERT INTO schema_migrations (version) VALUES (5)').run();
+  }
   const accounts = db.prepare('PRAGMA table_info(accounts)').all() as Array<{ name: string }>;
   if (!accounts.some(column => column.name === 'archived')) db.exec('ALTER TABLE accounts ADD COLUMN archived INTEGER NOT NULL DEFAULT 0');
   const transactions = db.prepare('PRAGMA table_info(transactions)').all() as Array<{ name: string }>;

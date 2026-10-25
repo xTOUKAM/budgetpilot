@@ -33,3 +33,21 @@ test('SQLite rolls back a failed atomic operation', () => {
   assert.equal(db.prepare('SELECT balance_cents FROM accounts WHERE id=1').get().balance_cents, 1000);
   db.close();
 });
+
+test('SQLite rejects a transfer larger than the source balance', () => {
+  const db = new Database(':memory:');
+  db.exec('CREATE TABLE accounts (id INTEGER PRIMARY KEY, balance_cents INTEGER NOT NULL); INSERT INTO accounts VALUES (1, 5000), (2, 0);');
+  const transfer = db.transaction((amount) => {
+    const source = db.prepare('SELECT balance_cents FROM accounts WHERE id=1').get();
+    if (source.balance_cents < amount) throw new Error('Solde insuffisant sur le compte source.');
+    db.prepare('UPDATE accounts SET balance_cents=balance_cents-? WHERE id=1').run(amount);
+    db.prepare('UPDATE accounts SET balance_cents=balance_cents+? WHERE id=2').run(amount);
+  });
+
+  assert.throws(() => transfer(10000), /Solde insuffisant/);
+  assert.deepEqual(db.prepare('SELECT balance_cents FROM accounts ORDER BY id').all(), [
+    { balance_cents: 5000 },
+    { balance_cents: 0 }
+  ]);
+  db.close();
+});

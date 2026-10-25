@@ -4,6 +4,7 @@ import { DashboardController } from './dashboard-controller';
 import { DataController } from './data-controller';
 import { PlanningController } from './planning-controller';
 import { TransactionController } from './transaction-controller';
+import { SecurityController } from './security-controller';
 
 export function registerControllers() {
   new DashboardController().register();
@@ -11,5 +12,8 @@ export function registerControllers() {
   new TransactionController().register();
   new PlanningController().register();
   new AnalyticsController().register();
-  new DataController().register();
+  const dataController = new DataController();
+  dataController.register();
+  new SecurityController().register();
+  return { dataController };
 }

@@ -1,7 +1,8 @@
 {
   "name": "warble",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
+  "author": "Warble",
   "description": "Warble, application locale de gestion financière personnelle",
   "main": "./out/main/index.js",
   "scripts": {
@@ -42,9 +43,16 @@
       "output": "release",
       "buildResources": "build"
     },
+    "copyright": "Copyright © 2026 Warble",
     "files": [
       "out/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      }
     ],
     "asar": true,
     "win": {
@@ -57,9 +65,15 @@
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "Warble",
+      "menuCategory": "Warble",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "unicode": true
     }
   }
 }

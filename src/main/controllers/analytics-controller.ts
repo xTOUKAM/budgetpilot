@@ -9,6 +9,9 @@ interface HistoryFilters {
   type: string;
   accountId: number;
   category: string;
+  minAmount: number;
+  maxAmount: number;
+  sort: 'date' | 'amount';
 }
 
 interface RecurringProjection {
@@ -39,6 +42,29 @@ export class AnalyticsController {
       SELECT
         t.id, t.account_id AS accountId, t.date, t.type,
         t.amount_cents AS amountCents, t.category, t.note,
+        t.transfer_group AS transferGroup,
+        CASE WHEN t.type = 'expense' THEN t.account_id ELSE (
+          SELECT source.account_id FROM transactions source
+          WHERE source.transfer_group = t.transfer_group AND source.type = 'expense'
+          LIMIT 1
+        ) END AS fromAccountId,
+        CASE WHEN t.type = 'income' THEN t.account_id ELSE (
+          SELECT target.account_id FROM transactions target
+          WHERE target.transfer_group = t.transfer_group AND target.type = 'income'
+          LIMIT 1
+        ) END AS toAccountId,
+        CASE WHEN t.type = 'expense' THEN a.name ELSE (
+          SELECT sourceAccount.name FROM transactions source
+          JOIN accounts sourceAccount ON sourceAccount.id = source.account_id
+          WHERE source.transfer_group = t.transfer_group AND source.type = 'expense'
+          LIMIT 1
+        ) END AS fromAccountName,
+        CASE WHEN t.type = 'income' THEN a.name ELSE (
+          SELECT targetAccount.name FROM transactions target
+          JOIN accounts targetAccount ON targetAccount.id = target.account_id
+          WHERE target.transfer_group = t.transfer_group AND target.type = 'income'
+          LIMIT 1
+        ) END AS toAccountName,
         a.name AS accountName
       FROM transactions t
       JOIN accounts a ON a.id = t.account_id
@@ -51,7 +77,11 @@ export class AnalyticsController {
         AND (? = '' OR t.type = ?)
         AND (? = 0 OR t.account_id = ?)
         AND (? = '' OR t.category = ?)
-      ORDER BY t.date DESC, t.id DESC
+        AND (? = 0 OR t.amount_cents >= ?)
+        AND (? = 0 OR t.amount_cents <= ?)
+      ORDER BY
+        CASE WHEN ? = 'amount' THEN t.amount_cents END DESC,
+        t.date DESC, t.id DESC
     `).all(
       filters.from,
       filters.to,
@@ -63,7 +93,12 @@ export class AnalyticsController {
       filters.accountId,
       filters.accountId,
       filters.category,
-      filters.category
+      filters.category,
+      filters.minAmount,
+      filters.minAmount,
+      filters.maxAmount,
+      filters.maxAmount,
+      filters.sort
     );
   }
 
@@ -123,8 +158,16 @@ export class AnalyticsController {
       to: String(input.to ?? '9999-12-31'),
       type: String(input.type ?? ''),
       accountId: Number(input.accountId ?? 0),
-      category: String(input.category ?? '')
+      category: String(input.category ?? ''),
+      minAmount: this.parseOptionalAmount(input.minAmount),
+      maxAmount: this.parseOptionalAmount(input.maxAmount),
+      sort: input.sort === 'amount' ? 'amount' : 'date'
     };
+  }
+
+  private parseOptionalAmount(value: unknown): number {
+    const amount = Number(value ?? 0);
+    return Number.isSafeInteger(amount) && amount > 0 ? amount : 0;
   }
 
   private parseForecastDays(rawDays: unknown): number {
